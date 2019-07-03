@@ -32,6 +32,11 @@
 #define OMPI_SKIP_MPICXX
 #include "../common/operations.h"
 
+#if HAVE_NCCL
+#include "nccl.h"
+#include "tensorflow/core/common_runtime/step_stats_collector.h"
+#endif
+
 using namespace tensorflow;
 using namespace horovod;
 
@@ -116,6 +121,7 @@ public:
   AllocateOutput(common::TensorShape shape,
                  std::shared_ptr<common::Tensor>* tensor) override;
   virtual common::Framework framework() const override;
+  virtual void save_data(int64_t start_usecs, int64_t end_usecs, void* nccl_prof) override;
   OpKernelContext* GetKernelContext() const;
 
 private:
@@ -248,6 +254,61 @@ common::Framework TFOpContext::framework() const {
   return common::Framework::TENSORFLOW;
 }
 
+#if HAVE_NCCL
+std::string CommTypeToString(commType_t comm_type) {
+  switch (comm_type) {
+    case NET_SEND:  return std::string("NET_SEND");
+    case NET_RECV:  return std::string("NET_RECV");
+    default:        return std::string("UndefinedType");
+  }
+}
+
+const std::string ncclprof_tostring(ncclProf_t* nccl_prof) {
+  std::string ret = "";
+  auto stat_vector = nccl_prof->stat_vector;
+  for (auto iter = stat_vector->begin(); iter != stat_vector->end(); ++iter) {
+    if (iter != nccl_prof->stat_vector->begin()) {
+      ret += std::string(", ");
+    }
+    ret += std::string("{ CommType: ") + CommTypeToString((*iter)->comm_type);
+    ret += std::string(", From Rank: ") + std::to_string((*iter)->from_rank);
+    ret += std::string(", To Rank: ") + std::to_string((*iter)->to_rank);
+    ret += std::string(", StartMicros: ") + std::to_string((*iter)->start_micros);
+    ret += std::string(", EndMicros: ") + std::to_string((*iter)->end_micros);
+    ret += std::string(", CommBytes: ") + std::to_string((*iter)->comm_bytes) + std::string(" }");
+  }
+  return ret;
+}
+#endif
+
+void TFOpContext::save_data(int64_t start_usecs, int64_t end_usecs, void* nccl_prof_ptr) {
+#if HAVE_NCCL
+  if (nccl_prof_ptr == nullptr) {
+    return;
+  }
+
+  StepStatsCollectorInterface* stats_collector = GetKernelContext()->stats_collector();
+  if (stats_collector == nullptr) {
+    return;
+  }
+  
+  auto nccl_prof = static_cast<ncclProf_t*>(nccl_prof_ptr); 
+  pthread_mutex_lock(&nccl_prof->mu_);
+  NodeExecStats* ns = new NodeExecStats;
+  std::string tensor_name(nccl_prof->tensor_name);
+  ns->set_node_name(tensor_name);
+  int64 elapsed_usecs = end_usecs - start_usecs;
+  auto label = ncclprof_tostring(nccl_prof);
+  ns->set_timeline_label(label);
+  ns->set_all_start_micros(start_usecs);
+  ns->set_op_start_rel_micros(0);
+  ns->set_op_end_rel_micros(elapsed_usecs);
+  ns->set_all_end_rel_micros(elapsed_usecs);
+  static_cast<StepStatsCollector*>(stats_collector)->Save("NCCL", ns);
+  pthread_mutex_unlock(&nccl_prof->mu_);
+#endif
+}
+
 OpKernelContext* TFOpContext::GetKernelContext() const { return context_; }
 
 int GetDeviceID(OpKernelContext* context) {
@@ -273,6 +334,24 @@ common::ReadyEvent* RecordReadyEvent(OpKernelContext* context) {
 
 } // namespace
 
+#if HAVE_NCCL
+ncclProf_t* get_prof_info(OpKernelContext* context, const string name) {
+  if (context->stats_collector() == nullptr) {
+    return nullptr;
+  }
+
+   ncclProf_t* nccl_prof = (ncclProf_t*) malloc(sizeof(ncclProf_t));
+
+   const std::string::size_type size = name.size();
+  char* tmp = new char[size + 1];
+  memcpy(tmp, name.c_str(), size + 1);
+  nccl_prof->tensor_name = tmp;
+  nccl_prof->mu_ = PTHREAD_MUTEX_INITIALIZER;
+  nccl_prof->stat_vector = new std::vector<commStat_t*>();
+  return nccl_prof;
+}
+#endif
+
 class HorovodAllreduceOp : public AsyncOpKernel {
 public:
   explicit HorovodAllreduceOp(OpKernelConstruction* context)
@@ -293,8 +372,12 @@ public:
     auto hvd_context = std::make_shared<TFOpContext>(context);
     auto hvd_tensor = std::make_shared<TFTensor>(tensor);
     auto hvd_output = std::make_shared<TFTensor>(*output);
+    std::shared_ptr<void> nccl_prof(nullptr);
+    #if HAVE_NCCL
+    nccl_prof.reset(get_prof_info(context, node_name));
+    #endif
     auto enqueue_result = EnqueueTensorAllreduce(
-        hvd_context, hvd_tensor, hvd_output, ready_event, node_name, device,
+        hvd_context, hvd_tensor, hvd_output, ready_event, nccl_prof, node_name, device,
         [context, done](const common::Status& status) {
           context->SetStatus(ConvertStatus(status));
           done();
@@ -349,8 +432,12 @@ public:
     auto ready_event = std::shared_ptr<common::ReadyEvent>(RecordReadyEvent(context));
     auto hvd_context = std::make_shared<TFOpContext>(context);
     auto hvd_tensor = std::make_shared<TFTensor>(tensor);
+    std::shared_ptr<void> nccl_prof(nullptr);
+    #if HAVE_NCCL
+    nccl_prof.reset(get_prof_info(context, node_name));
+    #endif
     auto enqueue_result = EnqueueTensorAllgather(
-        hvd_context, hvd_tensor, ready_event, node_name, device,
+        hvd_context, hvd_tensor, ready_event, nccl_prof, node_name, device,
         [context, done](const common::Status& status) {
           context->SetStatus(ConvertStatus(status));
           done();
@@ -419,9 +506,13 @@ public:
     if (output != nullptr) {
       hvd_output = std::make_shared<TFTensor>(*output);
     }
+    std::shared_ptr<void> nccl_prof(nullptr);
+    #if HAVE_NCCL
+    nccl_prof.reset(get_prof_info(context, node_name));
+    #endif
     auto enqueue_result = EnqueueTensorBroadcast(
-        hvd_context, hvd_tensor, hvd_output, root_rank_, ready_event, node_name,
-        device, [context, done](const common::Status& status) {
+        hvd_context, hvd_tensor, hvd_output, root_rank_, ready_event, nccl_prof,
+        node_name, device, [context, done](const common::Status& status) {
           context->SetStatus(ConvertStatus(status));
           done();
         });

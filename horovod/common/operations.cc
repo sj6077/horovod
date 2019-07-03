@@ -1685,6 +1685,7 @@ Status EnqueueTensorAllreduce(std::shared_ptr<OpContext> context,
                               std::shared_ptr<Tensor> tensor,
                               std::shared_ptr<Tensor> output,
                               std::shared_ptr<ReadyEvent> ready_event,
+			      std::shared_ptr<void> nccl_prof,
                               const std::string name, const int device,
                               StatusCallback callback) {
   Request message;
@@ -1703,6 +1704,7 @@ Status EnqueueTensorAllreduce(std::shared_ptr<OpContext> context,
   e.tensor = tensor;
   e.output = output;
   e.ready_event = ready_event;
+  e.nccl_prof = nccl_prof;
   e.device = device;
   e.callback = callback;
 
@@ -1725,6 +1727,7 @@ Status EnqueueTensorAllreduce(std::shared_ptr<OpContext> context,
 Status EnqueueTensorAllgather(std::shared_ptr<OpContext> context,
                               std::shared_ptr<Tensor> tensor,
                               std::shared_ptr<ReadyEvent> ready_event,
+                              std::shared_ptr<void> nccl_prof,
                               const std::string name, const int device,
                               StatusCallback callback) {
   Request message;
@@ -1742,6 +1745,7 @@ Status EnqueueTensorAllgather(std::shared_ptr<OpContext> context,
   e.context = context;
   e.tensor = tensor;
   e.ready_event = ready_event;
+  e.nccl_prof = nccl_prof;
   e.device = device;
   e.callback = callback;
 
@@ -1765,6 +1769,7 @@ Status EnqueueTensorBroadcast(std::shared_ptr<OpContext> context,
                               std::shared_ptr<Tensor> tensor,
                               std::shared_ptr<Tensor> output, int root_rank,
                               std::shared_ptr<ReadyEvent> ready_event,
+			      std::shared_ptr<void> nccl_prof,
                               const std::string name, const int device,
                               StatusCallback callback) {
   Request message;
@@ -1785,6 +1790,7 @@ Status EnqueueTensorBroadcast(std::shared_ptr<OpContext> context,
   e.output = output;
   e.root_rank = root_rank;
   e.ready_event = ready_event;
+  e.nccl_prof = nccl_prof;
   e.device = device;
   e.callback = callback;
 

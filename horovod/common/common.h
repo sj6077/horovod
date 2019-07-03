@@ -158,6 +158,7 @@ public:
   virtual Status AllocateOutput(TensorShape shape,
                                 std::shared_ptr<Tensor>* tensor) = 0;
   virtual Framework framework() const = 0;
+  virtual void save_data(int64_t start_usecs, int64_t end_usecs, void* nccl_prof) = 0;
   virtual ~OpContext() = default;
 };
 
@@ -181,6 +182,9 @@ struct TensorTableEntry {
   int root_rank = 0;
   // Event indicating that data is ready.
   std::shared_ptr<ReadyEvent> ready_event;
+  // Information for NCCL profiling
+  std::shared_ptr<void> nccl_prof;
+
   // GPU to do reduction on, or CPU_DEVICE_ID in case of CPU.
   int device = CPU_DEVICE_ID;
   // A callback to call with the status.

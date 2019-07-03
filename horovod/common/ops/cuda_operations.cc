@@ -16,7 +16,12 @@
 
 #include "cuda_operations.h"
 
+#include <sys/time.h>
 #include <thread>
+
+#if HAVE_NCCL
+#include <nccl.h>
+#endif
 
 namespace horovod {
 namespace common {
@@ -145,6 +150,12 @@ void CUDAAllreduce::InitCUDAQueue(const std::vector<TensorTableEntry>& entries, 
   }
 }
 
+int64_t NowMicros() {
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+  return static_cast<int64_t>(tv.tv_sec) * 1000000 + tv.tv_usec;
+}
+
 Status CUDAAllreduce::FinalizeCUDAQueue(const std::vector<TensorTableEntry>& entries) {
   // Use completion marker via event because it's faster than
   // blocking cudaStreamSynchronize() in this thread.
@@ -155,10 +166,10 @@ Status CUDAAllreduce::FinalizeCUDAQueue(const std::vector<TensorTableEntry>& ent
   auto& event_queue = event_queue_;
   auto& timeline = global_state_->timeline;
   auto& cuda_context = cuda_context_;
-
+  int64_t start_micros = NowMicros();
   // TODO: use thread pool or single thread for callbacks
   std::thread finalizer_thread([entries, first_entry, host_buffer,
-                                event_queue, &timeline, &cuda_context]() mutable {
+                                event_queue, &timeline, &cuda_context, start_micros]() mutable {
     auto cuda_result = cudaSetDevice(first_entry.device);
     cuda_context->ErrorCheck("cudaSetDevice", cuda_result);
 
@@ -167,9 +178,23 @@ Status CUDAAllreduce::FinalizeCUDAQueue(const std::vector<TensorTableEntry>& ent
       free(host_buffer);
     }
 
+    int64_t end_micros = NowMicros();
+    #if HAVE_NCCL 
+    first_entry.context->save_data(start_micros, end_micros, first_entry.nccl_prof.get());
+    #endif
     for (auto& e : entries) {
       timeline.End(e.tensor_name, e.output);
       e.callback(Status::OK());
+      #if HAVE_NCCL
+      if (e.nccl_prof) {
+        auto nccl_prof = static_cast<ncclProf_t*>(e.nccl_prof.get());
+        free(nccl_prof->tensor_name);
+	for (auto it = nccl_prof->stat_vector->begin(); it != nccl_prof->stat_vector->end(); ++it) {
+          free(*it);
+        }
+        delete nccl_prof->stat_vector;
+      }
+      #endif
     }
   });
 

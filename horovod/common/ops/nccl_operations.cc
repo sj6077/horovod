@@ -82,15 +82,33 @@ Status NCCLAllreduce::Execute(std::vector<TensorTableEntry>& entries, const Resp
   }
 
   int64_t num_elements = 0;
+  size_t str_size = 0;
   for (auto& e : entries) {
     num_elements += e.tensor->shape().num_elements();
+    if (e.nccl_prof) {
+      str_size += strlen(static_cast<ncclProf_t*>(e.nccl_prof.get())->tensor_name) + 1;
+    }
+  }
+  
+  auto nccl_prof = static_cast<ncclProf_t*>(first_entry.nccl_prof.get());
+  if (first_entry.nccl_prof) {
+    char* tmp = new char[str_size];
+    strcpy(tmp, nccl_prof->tensor_name);
+    for (auto it = entries.begin(); it != entries.end(); it++) {
+      if (it != entries.begin()) {
+        strcat(tmp, ";");
+        strcat(tmp, static_cast<ncclProf_t*>(it->nccl_prof.get())->tensor_name);
+      }
+    }
+    nccl_prof->tensor_name = tmp;
   }
 
   // Do allreduce.
   auto nccl_result = ncclAllReduce(fused_input_data, buffer_data,
                                    (size_t) num_elements,
                                    GetNCCLDataType(first_entry.tensor), ncclSum,
-                                   *nccl_comm_, *stream_);
+                                   *nccl_comm_, *stream_, nccl_prof);
+
   nccl_context_->ErrorCheck("ncclAllReduce", nccl_result);
   if (global_state_->timeline.Initialized()) {
     cuda_context_->RecordEvent(event_queue_, NCCL_ALLREDUCE, *stream_);
@@ -196,8 +214,12 @@ Status NCCLHierarchicalAllreduce::Execute(std::vector<TensorTableEntry>& entries
   }
 
   int64_t num_elements = 0;
+  size_t str_size = 0;
   for (auto& e : entries) {
     num_elements += e.tensor->shape().num_elements();
+    if (e.nccl_prof){
+      str_size += strlen(static_cast<ncclProf_t*>(e.nccl_prof.get())->tensor_name) + 1;
+    }
   }
 
   // Do allreduce.
@@ -265,12 +287,26 @@ Status NCCLHierarchicalAllreduce::Execute(std::vector<TensorTableEntry>& entries
                    : buffer_len_per_rank;
 
   auto& timeline = global_state_->timeline;
+
+  auto nccl_prof = static_cast<ncclProf_t*>(first_entry.nccl_prof.get());
+  if (first_entry.nccl_prof) {
+    char* tmp = new char[str_size];
+    strcpy(tmp, nccl_prof->tensor_name);
+    for (auto it = entries.begin(); it != entries.end(); it++) {
+      if (it != entries.begin()) {
+        strcat(tmp, ";");
+        strcat(tmp, static_cast<ncclProf_t*>(it->nccl_prof.get())->tensor_name);
+      }
+    }
+    nccl_prof->tensor_name = tmp;
+  }
+
   if (num_elements_per_rank > 0) {
     auto nccl_result = ncclReduceScatter(fused_input_data,
                                          buffer_data_at_rank_offset,
                                          (size_t) num_elements_per_rank,
                                          GetNCCLDataType(first_entry.tensor),
-                                         ncclSum, *nccl_comm_, *stream_);
+                                         ncclSum, *nccl_comm_, *stream_, nccl_prof);
     nccl_context_->ErrorCheck("ncclReduceScatter", nccl_result);
     if (global_state_->timeline.Initialized()) {
       cuda_context_->RecordEvent(event_queue_, NCCL_REDUCESCATTER, *stream_);
@@ -284,7 +320,7 @@ Status NCCLHierarchicalAllreduce::Execute(std::vector<TensorTableEntry>& entries
                                   buffer_data_remainder,
                                   (size_t) num_elements_remaining,
                                   GetNCCLDataType(first_entry.tensor), ncclSum,
-                                  root_rank, *nccl_comm_, *stream_);
+                                  root_rank, *nccl_comm_, *stream_, nccl_prof);
     nccl_context_->ErrorCheck("ncclReduce", nccl_result);
     if (global_state_->timeline.Initialized()) {
       cuda_context_->RecordEvent(event_queue_, NCCL_REDUCE, *stream_);
@@ -334,7 +370,7 @@ Status NCCLHierarchicalAllreduce::Execute(std::vector<TensorTableEntry>& entries
                               ncclAllGather(buffer_data_at_rank_offset, buffer_data,
                                             (size_t) num_elements_per_rank,
                                             GetNCCLDataType(first_entry.tensor),
-                                            *nccl_comm_, *stream_));
+                                            *nccl_comm_, *stream_, nccl_prof));
     if (global_state_->timeline.Initialized()) {
       cuda_context_->RecordEvent(event_queue_, NCCL_ALLGATHER, *stream_);
     }
@@ -344,7 +380,7 @@ Status NCCLHierarchicalAllreduce::Execute(std::vector<TensorTableEntry>& entries
                               ncclBcast(buffer_data_remainder,
                                         (size_t) num_elements_remaining,
                                         GetNCCLDataType(first_entry.tensor), root_rank,
-                                        *nccl_comm_, *stream_));
+                                        *nccl_comm_, *stream_, nccl_prof));
     if (global_state_->timeline.Initialized()) {
       cuda_context_->RecordEvent(event_queue_, NCCL_BCAST, *stream_);
     }

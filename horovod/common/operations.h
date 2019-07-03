@@ -84,12 +84,14 @@ Status EnqueueTensorAllreduce(std::shared_ptr<OpContext> context,
                               std::shared_ptr<Tensor> tensor,
                               std::shared_ptr<Tensor> output,
                               std::shared_ptr<ReadyEvent> ready_event,
+			      std::shared_ptr<void> nccl_prof,
                               const std::string name, const int device,
                               StatusCallback callback);
 
 Status EnqueueTensorAllgather(std::shared_ptr<OpContext> context,
                               std::shared_ptr<Tensor> tensor,
                               std::shared_ptr<ReadyEvent> ready_event,
+			      std::shared_ptr<void> nccl_prof,
                               const std::string name, const int device,
                               StatusCallback callback);
 
@@ -97,6 +99,7 @@ Status EnqueueTensorBroadcast(std::shared_ptr<OpContext> context,
                               std::shared_ptr<Tensor> tensor,
                               std::shared_ptr<Tensor> output, int root_rank,
                               std::shared_ptr<ReadyEvent> ready_event,
+			      std::shared_ptr<void> nccl_prof,
                               const std::string name, const int device,
                               StatusCallback callback);
 
